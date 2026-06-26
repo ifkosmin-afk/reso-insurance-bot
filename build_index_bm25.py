@@ -18,7 +18,7 @@ CHUNK_OVERLAP = 150   # overlap characters
 
 
 def load_files():
-    files = sorted(f for f in os.listdir(KNOWLEDGE_DIR) if f.startswith("База_") and f.endswith(".txt"))
+    files = sorted(f for f in os.listdir(KNOWLEDGE_DIR) if f.endswith(".txt") and f != "requirements.txt")
     docs = []
     for fname in files:
         path = os.path.join(KNOWLEDGE_DIR, fname)
