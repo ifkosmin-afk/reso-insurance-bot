@@ -28,12 +28,14 @@ def load_files():
     return docs
 
 
-def split_by_document(text):
+def split_by_document(text, file_name=""):
     """Split text into sections by ДОКУМЕНТ: headers."""
     parts = re.split(r"={6,}\n## ДОКУМЕНТ: (.+?)\n={6,}", text)
     sections = []
     if len(parts) < 3:
-        sections.append(("unknown", text))
+        # No ДОКУМЕНТ headers — use filename as source
+        source = file_name.replace(".txt", "") if file_name else "unknown"
+        sections.append((source, text))
     else:
         for i in range(1, len(parts), 2):
             doc_name = parts[i].strip()
@@ -53,6 +55,7 @@ def chunk_text(text, doc_name, file_name):
             "text": chunk,
             "doc_name": doc_name,
             "file_name": file_name,
+            "source": doc_name,
         })
         if end == len(text):
             break
@@ -73,7 +76,7 @@ def main():
 
     all_chunks = []
     for file_name, text in docs:
-        sections = split_by_document(text)
+        sections = split_by_document(text, file_name)
         for doc_name, section_text in sections:
             chunks = chunk_text(section_text, doc_name, file_name)
             all_chunks.extend(chunks)
