@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+nohup.out
+bot.log
+test_model.py
+test_rag.py
+build_index.py
