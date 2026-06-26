@@ -9,8 +9,9 @@ import pickle
 from rank_bm25 import BM25Okapi
 
 # ── Config ──────────────────────────────────────────────────────────────────
-KNOWLEDGE_DIR = "/home/ubuntu/reso_bot"
-INDEX_PATH    = "/home/ubuntu/reso_bot/reso_bm25.pkl"
+# Use directory of this script so it works both locally and on Railway (/app)
+KNOWLEDGE_DIR = os.path.dirname(os.path.abspath(__file__))
+INDEX_PATH    = os.path.join(KNOWLEDGE_DIR, "reso_bm25.pkl")
 CHUNK_SIZE    = 600   # characters per chunk
 CHUNK_OVERLAP = 150   # overlap characters
 # ────────────────────────────────────────────────────────────────────────────
