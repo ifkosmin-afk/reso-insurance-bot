@@ -24,9 +24,9 @@ OPENAI_API_KEY  = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_API_BASE = os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1")
 
 INDEX_PATH  = os.path.join(os.path.dirname(__file__), "reso_bm25.pkl")
-TOP_K       = 6
+TOP_K       = 8
 LLM_MODEL   = os.environ.get("LLM_MODEL", "gpt-4o-mini")
-MAX_CONTEXT = 4000
+MAX_CONTEXT = 6000
 # ────────────────────────────────────────────────────────────────────────────
 
 logging.basicConfig(

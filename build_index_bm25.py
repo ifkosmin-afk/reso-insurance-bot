@@ -1,6 +1,17 @@
 """
 Build BM25 search index from RESO knowledge base text files.
-Splits documents into chunks and saves the BM25 index + metadata.
+
+Этот индексатор:
+  • корректно разбивает файлы на отдельные ДОКУМЕНТЫ (по заголовкам "## ДОКУМЕНТ:"),
+    устойчиво к строке "_Источник:_" между заголовком и разделителем;
+  • чистит служебный мусор (линии "====", строки заголовков/источников) из текста;
+  • режет каждый документ на КРУПНЫЕ смысловые чанки по границам абзацев
+    (а не вслепую по символам), не разрывая слова и факты;
+  • короткие документы (меньше целевого размера) кладёт ЦЕЛИКОМ одним чанком;
+  • в текст для поиска подмешивает название документа, чтобы запрос по продукту
+    («КАСКО от БПЛА») лучше находил нужный документ.
+
+Формат pickle совместим с bot.py: {"bm25", "chunks":[{text,doc_name,file_name,source}], "tokenized"}.
 """
 
 import os
@@ -8,83 +19,128 @@ import re
 import pickle
 from rank_bm25 import BM25Okapi
 
-# ── Config ──────────────────────────────────────────────────────────────────
-# Use directory of this script so it works both locally and on Railway (/app)
+# -- Config ------------------------------------------------------------------
 KNOWLEDGE_DIR = os.path.dirname(os.path.abspath(__file__))
 INDEX_PATH    = os.path.join(KNOWLEDGE_DIR, "reso_bm25.pkl")
-CHUNK_SIZE    = 600   # characters per chunk
-CHUNK_OVERLAP = 150   # overlap characters
-# ────────────────────────────────────────────────────────────────────────────
+
+CHUNK_TARGET  = 1300   # целевой размер чанка, символов (крупнее => факты не рвутся)
+CHUNK_MAX     = 1800   # жёсткий потолок для одного чанка
+CHUNK_OVERLAP = 200    # перекрытие между чанками, символов
+# ----------------------------------------------------------------------------
 
 
 def load_files():
-    files = sorted(f for f in os.listdir(KNOWLEDGE_DIR) if f.endswith(".txt") and f != "requirements.txt")
+    # Исключаем База_*.txt — это полный дубль категорийных файлов 01-14
+    # (143 документа, все уже есть в 01-14; индексация обоих давала задвоение).
+    files = sorted(
+        f for f in os.listdir(KNOWLEDGE_DIR)
+        if f.endswith(".txt")
+        and f != "requirements.txt"
+        and not f.startswith("База_")
+    )
     docs = []
     for fname in files:
-        path = os.path.join(KNOWLEDGE_DIR, fname)
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(os.path.join(KNOWLEDGE_DIR, fname), "r", encoding="utf-8") as fh:
             docs.append((fname, fh.read()))
     print(f"Loaded {len(docs)} files")
     return docs
 
 
-def split_by_document(text, file_name=""):
-    """Split text into sections by ДОКУМЕНТ: headers."""
-    parts = re.split(r"={6,}\n## ДОКУМЕНТ: (.+?)\n={6,}", text)
+DOC_HEADER_RE = re.compile(r"^##\s*ДОКУМЕНТ:\s*(.+?)\s*$", re.MULTILINE)
+SEP_LINE_RE   = re.compile(r"^={6,}\s*$", re.MULTILINE)
+SRC_LINE_RE   = re.compile(r"^_Источник:.*$", re.MULTILINE)
+
+
+def clean_text(text):
+    text = SEP_LINE_RE.sub("", text)
+    text = SRC_LINE_RE.sub("", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def split_by_document(text, file_name):
+    base = file_name.replace(".txt", "")
+    matches = list(DOC_HEADER_RE.finditer(text))
+    if not matches:
+        return [(base, clean_text(text))]
     sections = []
-    if len(parts) < 3:
-        # No ДОКУМЕНТ headers — use filename as source
-        source = file_name.replace(".txt", "") if file_name else "unknown"
-        sections.append((source, text))
-    else:
-        for i in range(1, len(parts), 2):
-            doc_name = parts[i].strip()
-            doc_text = parts[i + 1].strip() if i + 1 < len(parts) else ""
-            sections.append((doc_name, doc_text))
+    for i, m in enumerate(matches):
+        doc_name = m.group(1).strip()
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        sections.append((doc_name, clean_text(text[start:end])))
     return sections
 
 
-def chunk_text(text, doc_name, file_name):
-    """Split text into overlapping character-based chunks."""
-    chunks = []
-    start = 0
-    while start < len(text):
-        end = min(start + CHUNK_SIZE, len(text))
-        chunk = text[start:end]
-        chunks.append({
-            "text": chunk,
+def split_paragraphs(text):
+    raw = re.split(r"\n\s*\n", text)
+    paras = []
+    for p in raw:
+        p = p.strip()
+        if not p:
+            continue
+        if len(p) <= CHUNK_MAX:
+            paras.append(p)
+        else:
+            buf = ""
+            for line in p.split("\n"):
+                if len(buf) + len(line) + 1 > CHUNK_MAX and buf:
+                    paras.append(buf.strip())
+                    buf = ""
+                buf += line + "\n"
+            if buf.strip():
+                paras.append(buf.strip())
+    return paras
+
+
+def chunk_document(doc_name, doc_text, file_name):
+    doc_text = doc_text.strip()
+    if not doc_text:
+        return []
+    paras = split_paragraphs(doc_text)
+    chunks_text = []
+    buf = ""
+    for p in paras:
+        if buf and len(buf) + len(p) + 2 > CHUNK_TARGET:
+            chunks_text.append(buf.strip())
+            tail = buf[-CHUNK_OVERLAP:]
+            buf = tail + "\n\n" + p
+        else:
+            buf = (buf + "\n\n" + p) if buf else p
+    if buf.strip():
+        chunks_text.append(buf.strip())
+
+    records = []
+    for ct in chunks_text:
+        records.append({
+            "text": f"[{doc_name}]\n{ct}",
             "doc_name": doc_name,
             "file_name": file_name,
             "source": doc_name,
         })
-        if end == len(text):
-            break
-        start += CHUNK_SIZE - CHUNK_OVERLAP
-    return chunks
+    return records
 
 
 def tokenize(text):
-    """Simple Russian-friendly tokenizer: lowercase, split on non-alphanumeric."""
-    text = text.lower()
-    tokens = re.findall(r"[а-яёa-z0-9]+", text)
-    return tokens
+    return re.findall(r"[а-яёa-z0-9]+", text.lower())
 
 
 def main():
-    print("=== Building RESO BM25 index ===")
+    print("=== Building RESO BM25 index (v2: document-aware, large chunks) ===")
     docs = load_files()
-
     all_chunks = []
+    doc_count = 0
     for file_name, text in docs:
-        sections = split_by_document(text, file_name)
-        for doc_name, section_text in sections:
-            chunks = chunk_text(section_text, doc_name, file_name)
-            all_chunks.extend(chunks)
+        for doc_name, doc_text in split_by_document(text, file_name):
+            doc_count += 1
+            all_chunks.extend(chunk_document(doc_name, doc_text, file_name))
+    print(f"Documents parsed: {doc_count}")
     print(f"Total chunks: {len(all_chunks)}")
-
+    lens = [len(c["text"]) for c in all_chunks]
+    if lens:
+        print(f"Chunk length: min={min(lens)} avg={sum(lens)//len(lens)} max={max(lens)}")
     tokenized = [tokenize(c["text"]) for c in all_chunks]
     bm25 = BM25Okapi(tokenized)
-
     with open(INDEX_PATH, "wb") as fh:
         pickle.dump({"bm25": bm25, "chunks": all_chunks, "tokenized": tokenized}, fh)
     print(f"BM25 index saved to {INDEX_PATH}")
