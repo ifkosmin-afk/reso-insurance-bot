@@ -1,4 +1,4 @@
 python-telegram-bot==22.8
-openai
-rank_bm25
-numpy
+openai>=1.0.0
+rank_bm25>=0.2.2
+numpy>=1.24.0
